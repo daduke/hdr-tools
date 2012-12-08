@@ -1,0 +1,343 @@
+#!/usr/bin/perl -w
+
+# HDR panorama automator
+# (c) 2012 daduke
+# distributed under the terms of the GNU General Public License version 2 or any later version.
+
+# to install Photomatix using wine, do:
+# wget http://kegel.com/wine/winetricks
+# sh winetricks dotnet11 corefonts
+# wine /path/to/PhotomatixPro303.exe
+
+use strict;
+use File::Basename;
+use Getopt::Std;
+use lib dirname($0);
+use hdr;									#our HDR helper functions
+use Cwd;
+use File::Glob ':glob';
+use File::Copy;
+use threads;
+use threads::shared;
+use Thread::Queue;
+
+my $VERSION = 1.01;
+my %args;
+getopts('hecn:', \%args);
+my @PRESETS = $ARGV[0] || myPresets();	#presets are defined in hdr.pm
+my $HDRNUM = ($args{n})?$args{n}:3;			#HDRs consist of 3 shots unless specified
+
+my ($DIRTHREADS, $PICTHREADS, $PRESETTHREADS, $HUGINTHREADS, $NCORES);
+my %dirs;
+foreach (`lscpu`) {							#determine number of CPU cores for multithreading
+        $NCORES=$1 if /^CPU\(s\):\s+(\d+)/;
+}
+
+if ($args{h}) {
+				printHelp();
+				exit;
+} elsif ($args{e}) {
+				my $exifSource =	glob("*.exr");
+				copy($exifSource, "hdr.exr");
+				$PRESETTHREADS = $NCORES;
+				my $basename = basename($exifSource, ".exr");
+				renderPresets($basename, './', $exifSource);
+				exit;
+}
+
+`JPG2jpg 2>/dev/null`;					#rename all JPGs to jpgs
+`CR22cr2 2>/dev/null`;					#rename all CR2s to cr2s
+my @pix = glob("*.{jpg,cr2}");	#determine directory contents
+opendir(my $dh, "./") || die;
+my @dirs = grep { !/^\./ && -d "$_" } readdir($dh);
+closedir $dh;
+
+if (@dirs && !@pix) {						#we have a bunch of dirs
+				foreach my $dir (@dirs) {
+					 `cd $dir; JPG2jpg 2>/dev/null`;	#rename all JPGs to jpgs
+					 `cd $dir; CR22cr2 2>/dev/null`;	#rename all CR2s to cr2s
+					 my @pix = glob("$dir/*.{jpg,cr2}");
+					 if (scalar @pix == $HDRNUM) {
+								push @{ $dirs{'single'} }, $dir;
+					 } else {
+								push @{ $dirs{'pano'} }, $dir;
+					 }
+				}
+
+				if (defined @{$dirs{'pano'}}) {
+						  $DIRTHREADS = $NCORES/3;
+						  $PICTHREADS = 1;
+						  $PRESETTHREADS = 3;
+							$HUGINTHREADS = $NCORES;
+						  print "\nprocessing ".@{$dirs{'pano'}}." pano directories using $DIRTHREADS directory threads,".
+						  " $PICTHREADS picture threads and $PRESETTHREADS preset threads on $NCORES cores.\n\n";
+						  my $panodirqueue = Thread::Queue->new;
+						  my @panodirthreads = map threads->create( \&dirthread, $panodirqueue ), 1 .. $DIRTHREADS;
+						  $panodirqueue->enqueue($_) for @{$dirs{'pano'}};
+						  $panodirqueue->enqueue( (undef) x $DIRTHREADS );                                  #flush queue
+						  $_->join for @panodirthreads;   
+				}
+
+
+				if (defined @{$dirs{'single'}}) {
+						  $DIRTHREADS = $NCORES/2;
+						  $PICTHREADS = 1;
+						  $PRESETTHREADS = 3;
+						  print "\nprocessing ".@{$dirs{'single'}}." picture directories using $DIRTHREADS directory threads,".
+						  " $PICTHREADS picture threads and $PRESETTHREADS preset threads on $NCORES cores.\n\n";
+						  my $singledirqueue = Thread::Queue->new;
+						  my @singledirthreads = map threads->create( \&dirthread, $singledirqueue ), 1 .. $DIRTHREADS;
+						  $singledirqueue->enqueue($_) for @{$dirs{'single'}};
+						  $singledirqueue->enqueue( (undef) x $DIRTHREADS );                                  #flush queue
+						  $_->join for @singledirthreads;   
+				}
+} elsif (@pix && ( !(@pix % $HDRNUM) || (scalar @pix==1 && $pix[0] =~ /cr2/) )  && !@dirs) {	#bunch of pix or pseudo HDR
+				$DIRTHREADS = 1;
+				$PICTHREADS = $NCORES/2;
+				$PRESETTHREADS = 3;
+				$HUGINTHREADS = $NCORES;
+				@dirs = (".");
+
+				print "\nprocessing ".(@pix/$HDRNUM)." pictures using $PICTHREADS picture threads and".
+				" $PRESETTHREADS preset threads on $NCORES cores.\n\n";
+
+				my $dirqueue = Thread::Queue->new;
+				my @dirthreads = map threads->create( \&dirthread, $dirqueue ), 1 .. $DIRTHREADS;
+				$dirqueue->enqueue($_) for @dirs;
+				$dirqueue->enqueue( (undef) x $DIRTHREADS );                                  #flush queue
+				$_->join for @dirthreads;   
+} else {											#mixed -> can't do, chief!
+				die "\nThis directory does not contain any combination of pics or directories I could work with. I'm sorry.\n\n";
+}
+
+#--------------------------------------------------------------
+
+sub dirthread {				#process one directory with a (pseudo) HDR image or HDR panorama
+				my $Q = shift;
+				my $tid = threads->tid;
+				while (my $dir = $Q->dequeue) {
+								my @pix = glob("$dir/*.{jpg,cr2}");
+								my @hdrdirs;
+								if (scalar @pix == $HDRNUM) {												#just one HDR shot
+												createHDR($dir, '');
+								} elsif (scalar @pix==1 && ($pix[0] =~ /cr2/)) {		#render pseudo-HDR from one RAW
+												createHDR($dir, 'p');
+								} elsif (!-d "hdr01") {															#HDR panorama
+												print "moving file into HDR directories\n";
+												my $dirNum = 1;
+												while (scalar @pix) {
+																my $targetDir = "$dir/hdr".substr("0".$dirNum++,-2);
+																mkdir $targetDir;
+																for my $pic (1..$HDRNUM) {
+																				my $pic = shift @pix;
+																				move("$pic", "$targetDir/");
+																}
+																push @hdrdirs, $targetDir;
+												}
+												foreach my $preset (@PRESETS, "compressor", "exr") {
+																mkdir "$dir/$preset";
+												}
+
+												my $picqueue = Thread::Queue->new;					#render all images of the panorama
+												my @picthreads = map threads->create( \&picthread, $picqueue, $dir ), 1 .. $PICTHREADS;
+												$picqueue->enqueue($_) for @hdrdirs;
+												$picqueue->enqueue( (undef) x $PICTHREADS );#flush queue
+												$_->join for @picthreads;   
+
+												my $middle = $hdrdirs[(scalar @hdrdirs)/2];
+												chomp $middle;
+												my $exifSource = `\\ls -1 $middle/unaligned/*.??? | head -1`;
+												chomp $exifSource;
+
+												print "\nlaunching hugin...\n";
+												system("touch $dir/compressor/pan.pto");		#first, render the Tone Compressor HDRs. Their panorama will be used as a template
+												                                            #for the other presets further down
+												system("cd $dir/compressor/; hugin pan.pto >/dev/null 2>&1");
+												unless (-s "$dir/compressor/pan.tif") {			#sometimes hugin doesn't render the panorama. If it didn't, do it now:
+																my $baseDir = getcwd."/$dir/compressor";
+																my ($useDir) = $baseDir =~ m#^.+?/(.+)$#;
+																$useDir .= "/";
+																$useDir =~ s#\./##;
+																system("cd $dir/compressor/; perl -pi -e 's#$useDir##g' pan.pto");
+																system("cd $dir/compressor/; autooptimiser -m -o pan.pto pan.pto >/dev/null 2>&1");
+																system("cd $dir/compressor/; pto2mk -o Makefile -p pan pan.pto >/dev/null 2>&1");
+																system("cd $dir/compressor/; make >/dev/null 2>&1");
+												}
+												my $basename = basename("$exifSource", qw(.jpg .cr2));
+												move("$dir/compressor/pan.tif", "$dir/compressor/$basename-hdrpan.tif");
+												system("cd $dir/compressor/; convert -quality 0.99 $basename-hdrpan.tif $basename-hdrpan.jpg >/dev/null 2>&1");
+												system("cd $dir/compressor/; exifcopy $basename-hdr.jpg $basename-hdrpan.jpg >/dev/null");
+												unlink glob "$dir/compressor/*.tif";
+												copy("$dir/compressor/$basename-hdrpan.jpg", "$dir/$basename-hdrpan-compressor.jpg");
+
+												{ #full HDR exr workflow
+																copy("$dir/compressor/pan.pto" ,"$dir/exr/");
+																system("cd $dir/exr; perl -pi -e 's#-hdr.jpg#-hdr.exr#g' pan.pto");
+																system("cd $dir/exr; perl -pi -e 's#hugin_outputLDRBlended true#hugin_outputLDRBlended false#g' pan.pto");
+																system("cd $dir/exr; perl -pi -e 's#hugin_outputHDRBlended false#hugin_outputHDRBlended true#g' pan.pto");
+																system("cd $dir/exr; autooptimiser -m -o pan.pto pan.pto >/dev/null 2>&1");
+																system("cd $dir/exr; pto2mk -o Makefile -p pan pan.pto >/dev/null 2>&1");
+#																system("cd $dir/exr; make >/dev/null 2>&1");
+																unlink glob "$dir/exr/pan*gray.pgm";
+																unlink glob "$dir/exr/pan_hdr_0*.exr";
+																unlink glob "$dir/exr/pan_stack_hdr_0*.exr";
+												}
+
+												if (!$args{c}) {		#render the other presets
+																my $huginqueue = Thread::Queue->new;
+																my @huginthreads = map threads->create( \&huginthread, $huginqueue, $basename, $exifSource, $dir), 1 .. $HUGINTHREADS;
+																$huginqueue->enqueue($_) for @PRESETS;
+																$huginqueue->enqueue( (undef) x $HUGINTHREADS );#flush queue
+																$_->join for @huginthreads;   
+												}
+								} else {
+												print "not ${HDRNUM}N pics in here, I'm out...\n";
+								}
+				}
+}
+
+sub picthread {
+	 my $Q = shift;
+	 my $tid = threads->tid;
+	 while (my $dir = $Q->dequeue) {
+					 createHDR($dir, '');
+					 foreach my $preset (@PRESETS, "compressor") {
+								for (glob "$dir/*-hdr-$preset.jpg") {
+												$_ = basename $_;
+												move "$dir/$_", "$dir/../$preset/";
+								}
+							for (glob "$dir/../$preset/*-$preset.jpg") {
+												$_ = basename $_;
+												my $n = $_;
+												$n =~ s#-$preset##;
+												move "$dir/../$preset/$_", "$dir/../$preset/$n";
+							}
+					 }
+					 for (glob "$dir/*-hdr.exr") {
+									 $_ = basename $_;
+									 move "$dir/$_", "$dir/../exr/";
+					 }
+	 }
+}
+
+sub createHDR {
+		  my ($dir, $pseudo) = @_;
+		  my @pix = glob("$dir/*.{jpg,cr2}");
+			my $hdrPix = join ' ', @pix;
+			$hdrPix =~ s#$dir/##g;
+			my $basename = basename($pix[0], qw(.jpg .cr2));
+			my $exifSource1;
+			my $raw = ($hdrPix =~ /.cr2/)?1:0;
+			if ($pseudo eq 'p' || $raw) {									#we need to process raw files first for pseudo or raw HDR
+							system("cd $dir; ufraw-batch --out-type=tif --out-depth=16 --wb=camera *.cr2 >/dev/null 2>&1");
+							mkdir "$dir/raw";
+							for (glob "$dir/*.cr2") {
+											$_ = basename $_;
+											move("$dir/$_", "$dir/raw/");
+							}
+							$hdrPix =~ s#cr2#tif#g;
+			}
+			if ($pseudo eq 'p') {													#render pseudo-HDR from one RAW
+							system("cd $dir; convert $hdrPix hdr.exr >/dev/null 2>&1");
+							$exifSource1 = "$dir/$hdrPix";
+			} else {																			#real HDR from 3 JPGs/RAWs
+							mkdir "$dir/aligned";
+							mkdir "$dir/unaligned" if (!$raw);
+							print "aligning pictures\n";
+							alignPix($dir, $hdrPix);
+
+							for (glob "$dir/*.jpg") {
+											$_ = basename $_;
+											move("$dir/$_", "$dir/unaligned/");
+							}
+							for (glob "$dir/aligned*.tif") {
+											$_ = basename $_;
+											move "$dir/$_", "$dir/aligned/";
+							}
+							if ($raw) {
+											$exifSource1 = (glob("$dir/raw/*.cr2"))[0];
+							} else {
+											$exifSource1 = (glob("$dir/unaligned/*.???"))[0];
+							}
+							my $alignedPix = join(" ", glob("$dir/aligned/*.tif"));
+							print "starting Photomatix to create HDR..\n";
+							$alignedPix =~ s#$dir/##g if ($dir ne '.');
+							createEXR($dir, $alignedPix);
+			}
+			renderPresets($basename, $dir, $exifSource1);
+}
+
+sub renderPresets {
+			my ($basename, $dir, $exifSource) = @_;
+	 		my $name = "$basename-hdr-compressor";
+			toneMapCompressor($dir, $name);
+			system("exifcopy $exifSource $dir/$name.jpg >/dev/null 2>&1");
+		  if (!$args{c}) {
+							my $presetqueue = Thread::Queue->new;
+							my @presetthreads = map threads->create( \&presetthread, $presetqueue, $dir, $basename, $exifSource ), 1 .. $PRESETTHREADS;
+							$presetqueue->enqueue($_) for @PRESETS;
+							$presetqueue->enqueue( (undef) x $PRESETTHREADS );
+							$_->join for @presetthreads;   
+		  }
+		  move("$dir/hdr.exr", "$dir/$basename-hdr.exr");
+		  unlink glob "$dir/aligned/*.tif";
+			rmdir "$dir/aligned";
+		  unlink glob "$dir/*.tif";
+}
+
+sub presetthread {
+	 my ($Q, $dir, $basename, $exifSource1) = @_;
+	 my $tid = threads->tid;
+	 while (my $preset = $Q->dequeue) {
+					 my $name = "$basename-hdr-$preset";
+					 toneMapPreset($dir, $preset, $name);
+					 system("exifcopy $exifSource1 $dir/$name.jpg >/dev/null 2>&1");
+	 }
+}
+
+sub huginthread {
+	 my ($Q, $basename, $exifSource, $dir) = @_;
+	 my $tid = threads->tid;
+	 while (my $preset = $Q->dequeue) {
+					 next if ($preset eq "compressor");
+					 copy("$dir/compressor/pan.pto", "$dir/$preset/");	#copy the hugin file from the Tone Compressor image, copy it to the other presets and run 
+					                                                    #a photometric optimization (panorama geometry is left unchanged)
+					 system("cd $dir/$preset; autooptimiser -m -o pan.pto pan.pto >/dev/null 2>&1");
+					 system("cd $dir/$preset; pto2mk -o Makefile -p pan pan.pto >/dev/null 2>&1");
+					 system("cd $dir/$preset; make >/dev/null 2>&1");
+					 move("$dir/$preset/pan.tif", "$dir/$preset/$basename-hdrpan.tif");
+					 system("convert -quality 0.99 $dir/$preset/$basename-hdrpan.tif $dir/$preset/$basename-hdrpan.jpg >/dev/null 2>&1");
+					 system("exifcopy $dir/$preset/$basename-hdr.jpg $dir/$preset/$basename-hdrpan.jpg >/dev/null");
+					 unlink glob "$dir/$preset/*.tif";
+					 copy("$dir/$preset/$basename-hdrpan.jpg", "$dir/$basename-hdrpan-$preset.jpg");
+				}
+}
+
+sub printHelp {
+				print <<EOF;
+
+HDR panorama automator v$VERSION, (c) Christian Herzog <daduke\@daduke.org>
+Website: http://daduke.org/linux/hdrpano.html
+Distributed under the terms of the GNU General Public License version 2 or any later version.
+
+usage: $0 [OPTIONS] [PRESET]
+
+where OPTION:
+       -c
+        only tonemap HDR using the Tone Compressor. If no -c flag is given, all
+        Detail Enhancer presets defined in hdr.pm are rendered as well as the
+        Tone Compressor - unless PRESET is specified, which will only tonemap
+        this one preset.
+
+       -n NUM
+        HDRs contain NUM exposure bracketed images. Default: 3
+
+       -e
+        render all tonemap presets for a single EXR file
+
+       -h
+        prints this help
+
+IF no options or presets are given, hdr_create will process all images or directories in ./ with all presets.
+EOF
+}

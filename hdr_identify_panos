@@ -1,0 +1,61 @@
+#!/usr/bin/perl -w
+
+use strict;
+use Date::Calc qw( Date_to_Time );
+sub getDateTime($);
+sub getExposureTime($);
+
+my $gap = 8;	#in seconds
+
+my @files = `find . -maxdepth 1 -type f | sort`;
+chomp @files;
+my $j = 0;
+my (@groups, @group);
+for my $i (0..@files-2) {
+	my $file = $files[$i];
+	my $fileTime = Date_to_Time(getDateTime($file));
+	my $exposureTime = getExposureTime($file);
+	$exposureTime = ($exposureTime > 2)?$exposureTime:0;
+	my $nextFile = $files[$i+1];
+	my $nextFileTime = Date_to_Time(getDateTime($nextFile));
+
+	if (($nextFileTime - ($fileTime + $exposureTime)) <= $gap) {
+		push @group, $file, $nextFile;
+		$i++;
+	} else {
+		my @uniqGroup = sort keys %{{ map { $_ => 1 } @group }};
+		$groups[$j] = \@uniqGroup;
+		@group = ();
+		$j++;
+	}
+}
+
+my @uniqGroup = sort keys %{{ map { $_ => 1 } @group }};
+$groups[$j] = \@uniqGroup;
+
+foreach my $group (sort keys @groups) {
+	next unless (@{$groups[$group]});
+	my $dir = substr("000$group", -4);
+	mkdir $dir;
+	my $files = '';
+	foreach my $file (@{$groups[$group]}) {
+		$files = join ' ', $files,$file;
+	}
+	`mv $files $dir/`;
+}
+
+sub getDateTime($) {
+	my $file = shift;
+	return unless $file;
+	my ($Y, $M, $D, $h, $m, $s) = `exiftool  -createdate $file` =~ /: (\d{4}):(\d{2}):(\d{2}) (\d{2}):(\d{2}):(\d{2})/;
+
+	return ($Y, $M, $D, $h, $m, $s);
+}
+
+sub getExposureTime($) {
+	my $file = shift;
+	return unless $file;
+	my ($t) = `exiftool  -exposuretime $file` =~ /: (\d+)[\\\.]?\d*/;
+
+	return ($t);
+}
