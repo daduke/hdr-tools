@@ -118,9 +118,10 @@ sub dirthread {				#process one directory with a (pseudo) HDR image or HDR panor
 				while (my $dir = $Q->dequeue) {
 								my @pix = glob("$dir/*.{jpg,cr2}");
 								my @hdrdirs;
+								my $raw = ($pix[0] =~ /cr2/)?1:0;
 								if (scalar @pix == $HDRNUM) {												#just one HDR shot
 												createHDR($dir, '');
-								} elsif (scalar @pix==1 && ($pix[0] =~ /cr2/)) {		#render pseudo-HDR from one RAW
+								} elsif (scalar @pix==1 && ($raw)) {		#render pseudo-HDR from one RAW
 												createHDR($dir, 'p');
 								} elsif (!-d "hdr01") {															#HDR panorama
 												print "moving file into HDR directories\n";
@@ -134,8 +135,13 @@ sub dirthread {				#process one directory with a (pseudo) HDR image or HDR panor
 																}
 																push @hdrdirs, $targetDir;
 												}
-												foreach my $preset (@PRESETS, "compressor", "exr") {
+												foreach my $preset ("compressor", "exr") {
 																mkdir "$dir/$preset";
+												}
+												unless ($args{c}) {
+																foreach my $preset (@PRESETS) {
+																				mkdir "$dir/$preset";
+																}
 												}
 
 												my $picqueue = Thread::Queue->new;					#render all images of the panorama
@@ -146,7 +152,8 @@ sub dirthread {				#process one directory with a (pseudo) HDR image or HDR panor
 
 												my $middle = $hdrdirs[(scalar @hdrdirs)/2];
 												chomp $middle;
-												my $exifSource = `\\ls -1 $middle/unaligned/*.??? | head -1`;
+												my $src = ($raw)?'raw':'unaligned';
+												my $exifSource = `\\ls -1 $middle/$src/*.??? | head -1`;
 												chomp $exifSource;
 
 												print "\nlaunching hugin...\n";
