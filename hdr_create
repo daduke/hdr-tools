@@ -64,7 +64,7 @@ if (@dirs && !@pix) {						#we have a bunch of dirs
 					 }
 				}
 
-				if (defined @{$dirs{'pano'}}) {
+				if ($dirs{'pano'}) {
 						  $DIRTHREADS = $NCORES/3;
 						  $PICTHREADS = 1;
 						  $PRESETTHREADS = 3;
@@ -79,10 +79,10 @@ if (@dirs && !@pix) {						#we have a bunch of dirs
 				}
 
 
-				if (defined @{$dirs{'single'}}) {
+				if ($dirs{'single'}) {
 						  $DIRTHREADS = $NCORES/2;
 						  $PICTHREADS = 1;
-						  $PRESETTHREADS = 3;
+						  $PRESETTHREADS = 2;
 						  print "\nprocessing ".@{$dirs{'single'}}." picture directories using $DIRTHREADS directory threads,".
 						  " $PICTHREADS picture threads and $PRESETTHREADS preset threads on $NCORES cores.\n\n";
 						  my $singledirqueue = Thread::Queue->new;
@@ -91,7 +91,7 @@ if (@dirs && !@pix) {						#we have a bunch of dirs
 						  $singledirqueue->enqueue( (undef) x $DIRTHREADS );                                  #flush queue
 						  $_->join for @singledirthreads;   
 				}
-} elsif (@pix && ( !(@pix % $HDRNUM) || (scalar @pix==1 && $pix[0] =~ /cr2/) )  && !@dirs) {	#bunch of pix or pseudo HDR
+} elsif (@pix && scalar @pix > 0 && ( !(@pix % $HDRNUM) || (scalar @pix==1 && $pix[0] =~ /cr2/) )  && !@dirs) {	#bunch of pix or pseudo HDR
 				$DIRTHREADS = 1;
 				$PICTHREADS = $NCORES/2;
 				$PRESETTHREADS = 3;
@@ -173,7 +173,7 @@ sub dirthread {				#process one directory with a (pseudo) HDR image or HDR panor
 												my $basename = basename("$exifSource", qw(.jpg .cr2));
 												move("$dir/compressor/pan.tif", "$dir/compressor/$basename-hdrpan.tif");
 												system("cd $dir/compressor/; convert -quality 0.99 $basename-hdrpan.tif $basename-hdrpan.jpg >/dev/null 2>&1");
-												system("cd $dir/compressor/; exifcopy $basename-hdr.jpg $basename-hdrpan.jpg >/dev/null");
+												system("cd $dir/compressor/; exifcopy $basename-hdrpan.tif $basename-hdrpan.jpg >/dev/null");
 												unlink glob "$dir/compressor/*.tif";
 												copy("$dir/compressor/$basename-hdrpan.jpg", "$dir/$basename-hdrpan-compressor.jpg");
 
@@ -314,7 +314,7 @@ sub huginthread {
 					 system("cd $dir/$preset; make >/dev/null 2>&1");
 					 move("$dir/$preset/pan.tif", "$dir/$preset/$basename-hdrpan.tif");
 					 system("convert -quality 0.99 $dir/$preset/$basename-hdrpan.tif $dir/$preset/$basename-hdrpan.jpg >/dev/null 2>&1");
-					 system("exifcopy $dir/$preset/$basename-hdr.jpg $dir/$preset/$basename-hdrpan.jpg >/dev/null");
+					 system("exifcopy $dir/$preset/$basename-hdrpan.tif $dir/$preset/$basename-hdrpan.jpg >/dev/null");
 					 unlink glob "$dir/$preset/*.tif";
 					 copy("$dir/$preset/$basename-hdrpan.jpg", "$dir/$basename-hdrpan-$preset.jpg");
 				}
