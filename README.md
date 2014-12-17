@@ -9,5 +9,5 @@ Set of Perl scripts to automate the creation of HDR images and panoramas as much
   * aligns and combines the exposure bracketed images
   * creates a Hugin config file and lets you create one template panorama. The geometry information of this panorama is then applied to a configurable set of other tonemapping presets
   * uses Photomatix running in wine
-  * creates an extra EXR directory containing all pre-tonemapped HDR files of the panorama plus a Makefile for panoramas with particularly difficult exposure conditions (like this one)
+  * creates an extra EXR directory containing all pre-tonemapped HDR files of the panorama plus a Makefile for panoramas with particularly difficult exposure conditions (like ![this one](http://daduke.org/pix/vacation/TX2010Nov/2010120x/IMG_4010-hdrpano.html))
   * in general, shifts as much work to the CPU instead of the user
