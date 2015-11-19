@@ -235,7 +235,17 @@ sub createHDR {
 			my $basename = basename($pix[0], qw(.jpg .cr2));
 			my $exifSource1;
 			my $raw = ($hdrPix =~ /.cr2/)?1:0;
-			if ($pseudo eq 'p' || $raw) {									#we need to process raw files first for pseudo or raw HDR
+			my $dualISO = ($hdrPix =~ /DUAL/)?1:0;
+            if ($dualISO) {
+							system("cd $dir; cr2hdr DUAL*.cr2 >/dev/null 2>&1");
+							mkdir "$dir/raw";
+							for (glob "$dir/*.cr2") {
+											$_ = basename $_;
+											move("$dir/$_", "$dir/raw/");
+							}
+							$hdrPix =~ s#cr2#DNG#g;
+                            $pseudo = 'p';
+            } elsif ($pseudo eq 'p' || $raw) {									#we need to process raw files first for pseudo or raw HDR
 							system("cd $dir; ufraw-batch --out-type=tif --out-depth=16 --wb=camera *.cr2 >/dev/null 2>&1");
 							mkdir "$dir/raw";
 							for (glob "$dir/*.cr2") {
