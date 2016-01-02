@@ -21,7 +21,7 @@ use threads;
 use threads::shared;
 use Thread::Queue;
 
-my $VERSION = 1.01;
+my $VERSION = 1.02;
 my %args;
 getopts('hecn:', \%args);
 my @PRESETS = $ARGV[0] || myPresets();	#presets are defined in hdr.pm
@@ -167,8 +167,9 @@ sub dirthread {				#process one directory with a (pseudo) HDR image or HDR panor
 																$useDir =~ s#\./##;
 																system("cd $dir/compressor/; perl -pi -e 's#$useDir##g' pan.pto");
 																system("cd $dir/compressor/; autooptimiser -m -o pan.pto pan.pto >/dev/null 2>&1");
-																system("cd $dir/compressor/; pto2mk -o Makefile -p pan pan.pto >/dev/null 2>&1");
-																system("cd $dir/compressor/; make >/dev/null 2>&1");
+#																system("cd $dir/compressor/; pto2mk -o Makefile -p pan pan.pto >/dev/null 2>&1");
+#																system("cd $dir/compressor/; make >/dev/null 2>&1");
+																system("cd $dir/compressor/; hugin_executor -a pan.pto >/dev/null 2>&1; hugin_executor -s pan.pto >/dev/null 2>&1");
 												}
 												my $basename = basename("$exifSource", qw(.jpg .cr2));
 												move("$dir/compressor/pan.tif", "$dir/compressor/$basename-hdrpan.tif");
@@ -183,8 +184,9 @@ sub dirthread {				#process one directory with a (pseudo) HDR image or HDR panor
 																system("cd $dir/exr; perl -pi -e 's#hugin_outputLDRBlended true#hugin_outputLDRBlended false#g' pan.pto");
 																system("cd $dir/exr; perl -pi -e 's#hugin_outputHDRBlended false#hugin_outputHDRBlended true#g' pan.pto");
 																system("cd $dir/exr; autooptimiser -m -o pan.pto pan.pto >/dev/null 2>&1");
-																system("cd $dir/exr; pto2mk -o Makefile -p pan pan.pto >/dev/null 2>&1");
+#																system("cd $dir/exr; pto2mk -o Makefile -p pan pan.pto >/dev/null 2>&1");
 #																system("cd $dir/exr; make >/dev/null 2>&1");
+																system("cd $dir/exr/; hugin_executor -a pan.pto >/dev/null 2>&1; hugin_executor -s pan.pto >/dev/null 2>&1");
 																unlink glob "$dir/exr/pan*gray.pgm";
 																unlink glob "$dir/exr/pan_hdr_0*.exr";
 																unlink glob "$dir/exr/pan_stack_hdr_0*.exr";
@@ -320,8 +322,9 @@ sub huginthread {
 					 copy("$dir/compressor/pan.pto", "$dir/$preset/");	#copy the hugin file from the Tone Compressor image, copy it to the other presets and run 
 					                                                    #a photometric optimization (panorama geometry is left unchanged)
 					 system("cd $dir/$preset; autooptimiser -m -o pan.pto pan.pto >/dev/null 2>&1");
-					 system("cd $dir/$preset; pto2mk -o Makefile -p pan pan.pto >/dev/null 2>&1");
-					 system("cd $dir/$preset; make >/dev/null 2>&1");
+#					 system("cd $dir/$preset; pto2mk2 -o Makefile -p pan pan.pto >/dev/null 2>&1");
+#					 system("cd $dir/$preset; make >/dev/null 2>&1");
+           system("cd $dir/$preset; hugin_executor -a pan.pto >/dev/null 2>&1; hugin_executor -s pan.pto >/dev/null 2>&1");
 					 move("$dir/$preset/pan.tif", "$dir/$preset/$basename-hdrpan.tif");
 					 system("convert -quality 0.99 $dir/$preset/$basename-hdrpan.tif $dir/$preset/$basename-hdrpan.jpg >/dev/null 2>&1");
 					 system("exifcopy $dir/$preset/$basename-hdrpan.tif $dir/$preset/$basename-hdrpan.jpg >/dev/null");
